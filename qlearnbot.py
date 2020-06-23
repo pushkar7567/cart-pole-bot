@@ -1,56 +1,86 @@
 import gym
 import numpy as np
-import random
-from IPython.display import clear_output
-from time import sleep
 
-def cartpole():
-    alpha = 0.1
-    gamma = 0.6
-    epsilon = 0.1
+MAX_NUM_EPISODES = 50000
+STEPS_PER_EPISODE = 200 
+EPSILON_MIN = 0.005
+max_num_steps = MAX_NUM_EPISODES * STEPS_PER_EPISODE
+EPSILON_DECAY = 500 * EPSILON_MIN / max_num_steps
+ALPHA = 0.05  
+GAMMA = 0.98  
+NUM_DISCRETE_BINS = 30  
 
-    env = gym.make('CartPole-v1')
+class Q_Learner(object):
+    def __init__(self, env):
+        self.obs_shape = env.observation_space.shape
+        self.obs_high = env.observation_space.high
+        self.obs_low = env.observation_space.low
+        self.obs_bins = NUM_DISCRETE_BINS
+        self.bin_width = (self.obs_high - self.obs_low) / self.obs_bins
+        self.action_shape = env.action_space.n
+        self.Q = np.zeros((self.obs_bins + 1, self.obs_bins + 1, self.action_shape))  
+        self.alpha = ALPHA  
+        self.gamma = GAMMA  
+        self.epsilon = 1.0
 
-    observation_space = env.observation_space.shape[0]
-    action_space = env.action_space.n
+    def discretize(self, obs):
+        return tuple(((obs - self.obs_low) / self.bin_width).astype(int))
 
-    q_table = np.zeros([observation_space, action_space])
+    def get_action(self, obs):
+        discretized_obs = self.discretize(obs)
+        # Epsilon-Greedy action selection
+        if self.epsilon > EPSILON_MIN:
+            self.epsilon -= EPSILON_DECAY
+        if np.random.random() > self.epsilon:
+            return np.argmax(self.Q[discretized_obs])
+        else:  # Choose a random action
+            return np.random.choice([a for a in range(self.action_shape)])
 
-    state = env.reset()
-    # print(env.observation_space.high)
+    def learn(self, obs, action, reward, next_obs):
+        discretized_obs = self.discretize(obs)
+        discretized_next_obs = self.discretize(next_obs)
+        self.Q[discretized_obs][action] += self.alpha * (reward + self.gamma * np.max(self.Q[discretized_next_obs]) - self.Q[discretized_obs][action])
 
-    for i in range(1, 100001):
-        state = env.reset()
+
+def train(agent, env):
+    best_reward = -float('inf')
+    for episode in range(MAX_NUM_EPISODES):
         done = False
-        
+        obs = env.reset()
+        total_reward = 0.0
         while not done:
-            if random.uniform(0, 1) < epsilon:
-                action = env.action_space.sample()
-            else: 
-                action = np.argmax(q_table[state, :])
-            
-            next_state, reward, done, info = env.step(action)
-            
-            old_value = q_table[state, action]
-            next_max = np.max(q_table[next_state])
+            action = agent.get_action(obs)
+            next_obs, reward, done, info = env.step(action)
+            agent.learn(obs, action, reward, next_obs)
+            obs = next_obs
+            total_reward += reward
+        if total_reward > best_reward:
+            best_reward = total_reward
+        print("Episode#:{} reward:{} best_reward:{} eps:{}".format(episode,
+                                     total_reward, best_reward, agent.epsilon))
+    # Return the trained policy
+    return np.argmax(agent.Q, axis=2)
 
-            new_value = (1-alpha)*old_value + alpha*(reward + gamma * next_max)
-            q_table[state, action] = new_value
 
-            env.render()
-        
-        if i%100 == 0:
-            clear_output(wait=True)
-            print(f"Episode: {i}")
-    print("Training Finished\n")
+def test(agent, env, policy):
+    done = False
+    obs = env.reset()
+    total_reward = 0.0
+    while not done:
+        action = policy[agent.discretize(obs)]
+        next_obs, reward, done, info = env.step(action)
+        obs = next_obs
+        total_reward += reward
+    return total_reward
 
-    # state = env.reset()
-    # done = False
-    # while not done:
-    #     env.render()
-    #     action = np.argmax(q_table[state])
-    #     next_state, reward, done, info = env.step(action)
 
- 
 if __name__ == "__main__":
-    cartpole()
+    env = gym.make('MountainCar-v0')
+    agent = Q_Learner(env)
+    learned_policy = train(agent, env)
+    # Use the Gym Monitor wrapper to evalaute the agent and record video
+    gym_monitor_path = "./gym_monitor_output"
+    env = gym.wrappers.Monitor(env, gym_monitor_path, force=True)
+    for _ in range(1000):
+        test(agent, env, learned_policy)
+    env.close()

@@ -4,7 +4,7 @@ num_episodes = 10
 rewards = []
 
 def main():
-    env = gym.make('SpaceInvaders-v0')
+    env = gym.make('CartPole-v0')
     env.reset()
     episode_reward = 0
     done = False

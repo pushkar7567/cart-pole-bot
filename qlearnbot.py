@@ -1,86 +1,69 @@
 import gym
 import numpy as np
+import time, math, random
+from typing import Tuple
+from sklearn.preprocessing import KBinsDiscretizer
 
-MAX_NUM_EPISODES = 50000
-STEPS_PER_EPISODE = 200 
-EPSILON_MIN = 0.005
-max_num_steps = MAX_NUM_EPISODES * STEPS_PER_EPISODE
-EPSILON_DECAY = 500 * EPSILON_MIN / max_num_steps
-ALPHA = 0.05  
-GAMMA = 0.98  
-NUM_DISCRETE_BINS = 30  
+env = gym.make("CartPole-v0")
+env.reset()
+done = False
 
-class Q_Learner(object):
-    def __init__(self, env):
-        self.obs_shape = env.observation_space.shape
-        self.obs_high = env.observation_space.high
-        self.obs_low = env.observation_space.low
-        self.obs_bins = NUM_DISCRETE_BINS
-        self.bin_width = (self.obs_high - self.obs_low) / self.obs_bins
-        self.action_shape = env.action_space.n
-        self.Q = np.zeros((self.obs_bins + 1, self.obs_bins + 1, self.action_shape))  
-        self.alpha = ALPHA  
-        self.gamma = GAMMA  
-        self.epsilon = 1.0
+epsilon = 0.1
+num_discrete_bins = (6, 12)
 
-    def discretize(self, obs):
-        return tuple(((obs - self.obs_low) / self.bin_width).astype(int))
+obs_shape = env.observation_space.shape
+action_shape = env.action_space.n
 
-    def get_action(self, obs):
-        discretized_obs = self.discretize(obs)
-        # Epsilon-Greedy action selection
-        if self.epsilon > EPSILON_MIN:
-            self.epsilon -= EPSILON_DECAY
-        if np.random.random() > self.epsilon:
-            return np.argmax(self.Q[discretized_obs])
-        else:  # Choose a random action
-            return np.random.choice([a for a in range(self.action_shape)])
+upper_bounds = [env.observation_space.high[2], math.radians(50)]
+lower_bounds = [env.observation_space.low[2], -math.radians(50)]
 
-    def learn(self, obs, action, reward, next_obs):
-        discretized_obs = self.discretize(obs)
-        discretized_next_obs = self.discretize(next_obs)
-        self.Q[discretized_obs][action] += self.alpha * (reward + self.gamma * np.max(self.Q[discretized_next_obs]) - self.Q[discretized_obs][action])
+Q_table = np.zeros(num_discrete_bins +  (action_shape,))
+n_episodes = 500
+
+def discretize(_, __, angle, pole_velocity):
+    est = KBinsDiscretizer(n_bins=num_discrete_bins, encode='ordinal', strategy='uniform')
+    est.fit([lower_bounds, upper_bounds])
+    return tuple(map(int, est.transform([[angle, pole_velocity]])[0]))
 
 
-def train(agent, env):
-    best_reward = -float('inf')
-    for episode in range(MAX_NUM_EPISODES):
-        done = False
-        obs = env.reset()
-        total_reward = 0.0
-        while not done:
-            action = agent.get_action(obs)
-            next_obs, reward, done, info = env.step(action)
-            agent.learn(obs, action, reward, next_obs)
-            obs = next_obs
-            total_reward += reward
-        if total_reward > best_reward:
-            best_reward = total_reward
-        print("Episode#:{} reward:{} best_reward:{} eps:{}".format(episode,
-                                     total_reward, best_reward, agent.epsilon))
-    # Return the trained policy
-    return np.argmax(agent.Q, axis=2)
+def policy(state: tuple):
+    return np.argmax(Q_table[state])
+
+def new_Q_value(reward: float, state_new: tuple, discount_factor=1) -> float:
+    future_optimal_value = np.max(Q_table[state_new])
+    learned_value = reward + discount_factor * future_optimal_value
+    return learned_value
+
+def learning_rate(n: int, min_rate=0.1) -> float:
+    return max(min_rate, 1.0-math.log10((n+1)/25))
+
+def exploration_rate(n : int, min_rate= 0.1 ) -> float :
+    return max(min_rate, min(1, 1.0 - math.log10((n  + 1) / 25)))
 
 
-def test(agent, env, policy):
-    done = False
-    obs = env.reset()
-    total_reward = 0.0
+for episode in range(n_episodes):
+    totalreward = 0
+    current_state, done = discretize(*env.reset()), False
     while not done:
-        action = policy[agent.discretize(obs)]
-        next_obs, reward, done, info = env.step(action)
-        obs = next_obs
-        total_reward += reward
-    return total_reward
+        action = policy(current_state)
+        if np.random.random() < exploration_rate(episode):
+            action = env.action_space.sample()
+        
+        obs, reward, done, info = env.step(action)
+        totalreward+=reward
+        new_state = discretize(*obs)
 
+        lr = learning_rate(episode)
+        learnt_value = new_Q_value(reward, new_state)
+        old_value = Q_table[current_state][action]
+        Q_table[current_state][action] = (1-lr)*(old_value) + lr*learnt_value
+        current_state = new_state
+    print(f"Episode: {episode} totalreward: {totalreward}")
 
-if __name__ == "__main__":
-    env = gym.make('MountainCar-v0')
-    agent = Q_Learner(env)
-    learned_policy = train(agent, env)
-    # Use the Gym Monitor wrapper to evalaute the agent and record video
-    gym_monitor_path = "./gym_monitor_output"
-    env = gym.wrappers.Monitor(env, gym_monitor_path, force=True)
-    for _ in range(1000):
-        test(agent, env, learned_policy)
-    env.close()
+current_state, done = discretize(*env.reset()), False
+while not done:
+    action = policy(current_state)
+    obs, reward, done, info = env.step(action)
+    new_state = discretize(*obs)
+    current_state = new_state
+    env.render()

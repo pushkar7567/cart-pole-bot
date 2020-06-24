@@ -1,2 +1,2 @@
-# space-invader-bot
-An Atari space invader game bot trained using DRL on OpenAI Gym environment.
+# Cart-Pole-bot
+A Cart-Pole simulated gym environment bot trained using Q-Learning, DRL on OpenAI Gym environment.

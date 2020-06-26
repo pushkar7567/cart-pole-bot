@@ -1,145 +1,98 @@
-import math, random
-
 import gym
+import random
+import os
 import numpy as np
+from collections      import deque
+from keras.models     import Sequential
+from keras.layers     import Dense
+from keras.optimizers import Adam
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.autograd as autograd 
-import torch.nn.functional as F
+class Agent():
+    def __init__(self, state_size, action_size):
+        self.weight_backup      = "cartpole_weight.h5"
+        self.state_size         = state_size
+        self.action_size        = action_size
+        self.memory             = deque(maxlen=2000)
+        self.learning_rate      = 0.001
+        self.gamma              = 0.95
+        self.exploration_rate   = 1.0
+        self.exploration_min    = 0.01
+        self.exploration_decay  = 0.995
+        self.brain              = self._build_model()
 
-from IPython.display import clear_output
-import matplotlib.pyplot as plt
+    def _build_model(self):
+        # Neural Net for Deep-Q learning Model
+        model = Sequential()
+        model.add(Dense(24, input_dim=self.state_size, activation='relu'))
+        model.add(Dense(24, activation='relu'))
+        model.add(Dense(self.action_size, activation='linear'))
+        model.compile(loss='mse', optimizer=Adam(lr=self.learning_rate))
 
-from collections import deque
+        if os.path.isfile(self.weight_backup):
+            model.load_weights(self.weight_backup)
+            self.exploration_rate = self.exploration_min
+        return model
 
-USE_CUDA = torch.cuda.is_available()
-Variable = lambda *args, **kwargs: autograd.Variable(*args, **kwargs)
+    # def save_model(self):
+            # self.brain.save(self.weight_backup)
 
-class ReplayBuffer(object):
-    def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
-    
-    def push(self, state, action, reward, next_state, done):
-        state      = np.expand_dims(state, 0)
-        next_state = np.expand_dims(next_state, 0)
-            
-        self.buffer.append((state, action, reward, next_state, done))
-    
-    def sample(self, batch_size):
-        state, action, reward, next_state, done = zip(*random.sample(self.buffer, batch_size))
-        return np.concatenate(state), action, reward, np.concatenate(next_state), done
-    
-    def __len__(self):
-        return len(self.buffer)
+    def act(self, state):
+        if np.random.rand() <= self.exploration_rate:
+            return random.randrange(self.action_size)
+        act_values = self.brain.predict(state)
+        return np.argmax(act_values[0])
 
-env_id = "CartPole-v0"
-env = gym.make(env_id)
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
 
-epsilon_start = 1.0
-epsilon_final = 0.01
-epsilon_decay = 500
+    def replay(self, sample_batch_size):
+        if len(self.memory) < sample_batch_size:
+            return
+        sample_batch = random.sample(self.memory, sample_batch_size)
+        for state, action, reward, next_state, done in sample_batch:
+            target = reward
+            if not done:
+              target = reward + self.gamma * np.amax(self.brain.predict(next_state)[0])
+            target_f = self.brain.predict(state)
+            target_f[0][action] = target
+            self.brain.fit(state, target_f, epochs=1, verbose=0)
+        if self.exploration_rate > self.exploration_min:
+            self.exploration_rate *= self.exploration_decay
 
-epsilon_by_frame = lambda frame_idx: epsilon_final + (epsilon_start - epsilon_final) * math.exp(-1. * frame_idx / epsilon_decay)
+class CartPole:
+    def __init__(self):
+        self.sample_batch_size = 32
+        self.episodes          = 10000
+        self.env               = gym.make('CartPole-v1')
 
-plt.plot([epsilon_by_frame(i) for i in range(10000)])
+        self.state_size        = self.env.observation_space.shape[0]
+        self.action_size       = self.env.action_space.n
+        self.agent             = Agent(self.state_size, self.action_size)
 
-class DQN(nn.Module):
-    def __init__(self, num_inputs, num_actions):
-        super(DQN, self).__init__()
-        
-        self.layers = nn.Sequential(
-            nn.Linear(env.observation_space.shape[0], 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, env.action_space.n)
-        )
-    
 
-    def forward(self, x):
-        return self.layers(x)
-    
-    def act(self, state, epsilon):
-        if random.random() > epsilon:
-            state   = Variable(torch.FloatTensor(state).unsqueeze(0), volatile=True)
-            q_value = self.forward(state)
-            action  = q_value.max(1)[1].item()
-        else:
-            action = random.randrange(env.action_space.n)
-        return action
+    def run(self):
+        # try:
+        for index_episode in range(self.episodes):
+            state = self.env.reset()
+            state = np.reshape(state, [1, self.state_size])
 
-model = DQN(env.observation_space.shape[0], env.action_space.n)
-    
-optimizer = optim.Adam(model.parameters())
+            done = False
+            index = 0
+            while not done:
+                self.env.render()
 
-replay_buffer = ReplayBuffer(1000)
+                action = self.agent.act(state)
 
-def compute_td_loss(batch_size):
-    state, action, reward, next_state, done = replay_buffer.sample(batch_size)
+                next_state, reward, done, _ = self.env.step(action)
+                next_state = np.reshape(next_state, [1, self.state_size])
+                self.agent.remember(state, action, reward, next_state, done)
+                state = next_state
+                index += 1
+            print("Episode {}# Score: {}".format(index_episode, index + 1))
+            self.agent.replay(self.sample_batch_size)
+        # finally:
+            # self.agent.save_model()
 
-    state      = Variable(torch.FloatTensor(np.float32(state)))
-    next_state = Variable(torch.FloatTensor(np.float32(next_state)), volatile=True)
-    action     = Variable(torch.LongTensor(action))
-    reward     = Variable(torch.FloatTensor(reward))
-    done       = Variable(torch.FloatTensor(done))
-
-    q_values      = model(state)
-    next_q_values = model(next_state)
-    q_value          = q_values.gather(1, action.unsqueeze(1)).squeeze(1)
-    next_q_value     = next_q_values.max(1)[0]
-    expected_q_value = reward + gamma * next_q_value * (1 - done)
-    
-    loss = (q_value - Variable(expected_q_value.data)).pow(2).mean()
-        
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-    
-    return loss
-
-def plot(frame_idx, rewards, losses):
-    clear_output(True)
-    plt.figure(figsize=(20,5))
-    plt.subplot(131)
-    plt.title('frame %s. reward: %s' % (frame_idx, np.mean(rewards[-10:])))
-    plt.plot(rewards)
-    plt.subplot(132)
-    plt.title('loss')
-    plt.plot(losses)
-    plt.show()
-
-num_frames = 10000
-batch_size = 32
-gamma      = 0.99
-
-losses = []
-all_rewards = []
-episode_reward = 0
-
-state = env.reset()
-
-for frame_idx in range(1, num_frames + 1):
-    # env.render()
-    epsilon = epsilon_by_frame(frame_idx)
-    action = model.act(state, epsilon)
-    
-    next_state, reward, done, _ = env.step(action)
-    replay_buffer.push(state, action, reward, next_state, done)
-    
-    state = next_state
-    episode_reward += reward
-    
-    if done:
-        state = env.reset()
-        all_rewards.append(episode_reward)
-        episode_reward = 0
-        
-    if len(replay_buffer) > batch_size:
-        loss = compute_td_loss(batch_size)
-        losses.append(loss.item())
-    # env.render()
-        
-    if frame_idx % 1000 == 0:
-        plot(frame_idx, all_rewards, losses)
+if __name__ == "__main__":
+    cartpole = CartPole()
+    cartpole.run()
